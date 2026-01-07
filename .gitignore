@@ -1,0 +1,23 @@
+# C / GCC build artifacts
+*.exe
+*.out
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+
+# Debug / IDE artifacts
+*.pdb
+*.ilk
+*.idb
+*.dSYM/
+.vscode/
+
+# Optional: common build folders
+build/
+out/
+Debug/
+Release/
