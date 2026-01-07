@@ -102,6 +102,23 @@
 				white-space: pre;
 				background: Canvas;
 			}
+			.terminal {
+				display: flex;
+				gap: 10px;
+				align-items: center;
+			}
+			.terminal input {
+				flex: 1;
+				min-width: 180px;
+				box-sizing: border-box;
+				padding: 10px;
+				border: 1px solid CanvasText;
+				border-radius: 10px;
+				background: Canvas;
+				color: CanvasText;
+				font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+				font-size: 12px;
+			}
 			.meta {
 				display: flex;
 				gap: 12px;
@@ -157,6 +174,9 @@
 					font-size: 12px;
 					max-height: 42vh;
 				}
+				.terminal input {
+					border-radius: 8px;
+				}
 			}
 		</style>
 	</head>
@@ -201,6 +221,16 @@
 					</div>
 
 					<pre id="viewer">Pick a folder, then click a .c file to view it here.</pre>
+					<div class="meta">
+						<div>
+							<div><strong>Input (for scanf)</strong></div>
+							<div class="status">Enter numbers/text separated by spaces or new lines.</div>
+						</div>
+					</div>
+					<div class="terminal">
+						<input id="stdinLine" placeholder="Type input and press Enter (example: 50)" autocomplete="off" />
+						<button id="sendInputBtn" type="button" disabled>Send</button>
+					</div>
 					<pre id="output">Output will appear here.</pre>
 				</div>
 			</section>
@@ -221,6 +251,8 @@
 			const statusEl = document.getElementById('status');
 			const treeEl = document.getElementById('tree');
 			const viewerEl = document.getElementById('viewer');
+			const stdinLineEl = document.getElementById('stdinLine');
+			const sendInputBtn = document.getElementById('sendInputBtn');
 			const outputEl = document.getElementById('output');
 			const selectedNameEl = document.getElementById('selectedName');
 			const selectedPathEl = document.getElementById('selectedPath');
@@ -231,6 +263,7 @@
 			let fallbackFiles = null;
 			let repoContext = null;
 			let pistonRuntime = null;
+			let stdinBuffer = '';
 
 			function setStatus(text) {
 				statusEl.textContent = text;
@@ -240,6 +273,9 @@
 				selectedNameEl.textContent = '(select a file)';
 				selectedPathEl.textContent = '';
 				viewerEl.textContent = 'Pick a folder, then click a .c file to view it here.';
+				stdinLineEl.value = '';
+				stdinBuffer = '';
+				sendInputBtn.disabled = true;
 				outputEl.textContent = 'Output will appear here.';
 				currentSelectionPath = null;
 				currentSourceCode = null;
@@ -631,9 +667,7 @@
 				return pistonRuntime;
 			}
 
-			async function runCurrentProgram() {
-				if (!currentSourceCode) return;
-				runBtn.disabled = true;
+			async function executeProgram(stdin) {
 				outputEl.textContent = 'Running…';
 				try {
 					const rt = await getPistonRuntime();
@@ -641,6 +675,7 @@
 						language: rt.language,
 						version: rt.version,
 						files: [{ name: 'main.c', content: currentSourceCode }],
+						stdin: stdin || '',
 					};
 					const res = await fetch('https://emkc.org/api/v2/piston/execute', {
 						method: 'POST',
@@ -655,9 +690,26 @@
 					outputEl.textContent = stdout.trim() ? stdout : '(no output)';
 				} catch (e) {
 					outputEl.textContent = `Run failed: ${e?.message || e}`;
-				} finally {
-					runBtn.disabled = !currentSourceCode;
 				}
+			}
+
+			function startRunSession() {
+				if (!currentSourceCode) return;
+				stdinBuffer = '';
+				stdinLineEl.value = '';
+				sendInputBtn.disabled = false;
+				outputEl.textContent = 'Program is waiting for input. Type values and press Enter.';
+				stdinLineEl.focus();
+			}
+
+			async function sendInputLine() {
+				if (!currentSourceCode) return;
+				const line = stdinLineEl.value;
+				stdinLineEl.value = '';
+				// Allow empty line (just sends a newline)
+				stdinBuffer += line + '\n';
+				await executeProgram(stdinBuffer);
+				stdinLineEl.focus();
 			}
 
 			function buildFallbackIndex(fileList) {
@@ -758,7 +810,14 @@
 
 			// Wire up UI
 			pickFolderBtn.addEventListener('click', pickFolder);
-			runBtn.addEventListener('click', runCurrentProgram);
+			runBtn.addEventListener('click', startRunSession);
+			sendInputBtn.addEventListener('click', sendInputLine);
+			stdinLineEl.addEventListener('keydown', (e) => {
+				if (e.key === 'Enter') {
+					e.preventDefault();
+					sendInputLine();
+				}
+			});
 			refreshBtn.addEventListener('click', async () => {
 				if (repoContext) {
 					await tryAutoLoadFromGitHubRepo();
