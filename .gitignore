@@ -15,6 +15,10 @@
 *.idb
 *.dSYM/
 .vscode/
+*.code-workspace
+
+# VS Code local history (if you use the extension)
+.history/
 
 # Optional: common build folders
 build/
