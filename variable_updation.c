@@ -8,3 +8,7 @@ int main() {
     printf("Final value of x after adding 3: %d\n", x);
     return 0;
 }
+
+
+
+//Author: Sarbeswar Panda

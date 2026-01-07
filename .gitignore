@@ -20,6 +20,10 @@
 # VS Code local history (if you use the extension)
 .history/
 
+# Python (optional local server)
+__pycache__/
+*.pyc
+
 # Optional: common build folders
 build/
 out/

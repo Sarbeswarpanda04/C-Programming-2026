@@ -3,6 +3,7 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="icon" href="data:," />
 		<title>C Folder Viewer</title>
 		<style>
 			:root {
@@ -16,6 +17,7 @@
 			header {
 				padding: 16px;
 				border-bottom: 1px solid CanvasText;
+                background: #d3fdff;
 			}
 			header h1 {
 				margin: 0 0 8px 0;
@@ -120,11 +122,40 @@
 			@media (max-width: 900px) {
 				main {
 					grid-template-columns: 1fr;
+					min-height: auto;
 				}
 				nav {
 					border-right: none;
 					border-bottom: 1px solid CanvasText;
-					max-height: 40vh;
+					max-height: 38vh;
+				}
+			}
+
+			@media (max-width: 600px) {
+				header {
+					padding: 12px;
+				}
+				.row {
+					gap: 10px;
+					padding: 0 12px 12px;
+				}
+				header h1 {
+					font-size: 16px;
+				}
+				button {
+					padding: 8px 10px;
+				}
+				.panel {
+					padding: 10px 12px;
+				}
+				.tree {
+					font-size: 12px;
+				}
+				pre {
+					padding: 10px;
+					border-radius: 8px;
+					font-size: 12px;
+					max-height: 42vh;
 				}
 			}
 		</style>
@@ -136,6 +167,8 @@
 				<button id="pickFolderBtn" type="button">Pick folder…</button>
 				<input id="fallbackPicker" type="file" webkitdirectory multiple hidden />
 				<button id="fallbackBtn" type="button" hidden>Pick folder (fallback)…</button>
+
+				<button id="runBtn" type="button" disabled>Run</button>
 
 				<label>
 					<input id="onlyC" type="checkbox" checked />
@@ -168,6 +201,7 @@
 					</div>
 
 					<pre id="viewer">Pick a folder, then click a .c file to view it here.</pre>
+					<pre id="output">Output will appear here.</pre>
 				</div>
 			</section>
 		</main>
@@ -181,17 +215,22 @@
 			const pickFolderBtn = document.getElementById('pickFolderBtn');
 			const fallbackBtn = document.getElementById('fallbackBtn');
 			const fallbackPicker = document.getElementById('fallbackPicker');
+			const runBtn = document.getElementById('runBtn');
 			const onlyC = document.getElementById('onlyC');
 			const refreshBtn = document.getElementById('refreshBtn');
 			const statusEl = document.getElementById('status');
 			const treeEl = document.getElementById('tree');
 			const viewerEl = document.getElementById('viewer');
+			const outputEl = document.getElementById('output');
 			const selectedNameEl = document.getElementById('selectedName');
 			const selectedPathEl = document.getElementById('selectedPath');
 
 			let rootHandle = null;
 			let currentSelectionPath = null;
+			let currentSourceCode = null;
 			let fallbackFiles = null;
+			let repoContext = null;
+			let pistonRuntime = null;
 
 			function setStatus(text) {
 				statusEl.textContent = text;
@@ -201,12 +240,45 @@
 				selectedNameEl.textContent = '(select a file)';
 				selectedPathEl.textContent = '';
 				viewerEl.textContent = 'Pick a folder, then click a .c file to view it here.';
+				outputEl.textContent = 'Output will appear here.';
 				currentSelectionPath = null;
+				currentSourceCode = null;
+				runBtn.disabled = true;
 			}
 
 			function shouldShowFile(name) {
+				// Hide dot-files like .gitignore
+				if (name.startsWith('.')) return false;
 				if (!onlyC.checked) return true;
 				return name.toLowerCase().endsWith('.c');
+			}
+
+			function shouldShowDir(name) {
+				// Hide dot-folders like .git and .vscode
+				return !name.startsWith('.');
+			}
+
+			function isHttp() {
+				return location.protocol === 'http:' || location.protocol === 'https:';
+			}
+
+			function isGitHubPagesHost() {
+				return location.hostname.toLowerCase().endsWith('.github.io');
+			}
+
+			function getQueryParam(name) {
+				const url = new URL(location.href);
+				return url.searchParams.get(name);
+			}
+
+			function inferGitHubPagesRepo() {
+				// Typical project pages URL: https://{owner}.github.io/{repo}/index.html
+				if (!isGitHubPagesHost()) return null;
+				const owner = location.hostname.split('.')[0];
+				const parts = location.pathname.split('/').filter(Boolean);
+				const repo = parts.length > 0 ? parts[0] : null;
+				if (!owner || !repo) return null;
+				return { owner, repo };
 			}
 
 			function escapeText(s) {
@@ -260,6 +332,7 @@
 						const fullPath = prefixPath ? `${prefixPath}/${entry.name}` : entry.name;
 
 						if (entry.kind === 'directory') {
+							if (!shouldShowDir(entry.name)) continue;
 							const { li, btn } = buildTreeNode(`📁 ${entry.name}`, false);
 							parentUl.appendChild(li);
 
@@ -302,6 +375,291 @@
 				setStatus(`Loaded folder. Showing ${shownFiles} of ${totalFiles} files.`);
 			}
 
+			async function fetchJson(url) {
+				const res = await fetch(url, { cache: 'no-store' });
+				if (!res.ok) throw new Error(`HTTP ${res.status}`);
+				return await res.json();
+			}
+
+			async function fetchText(url) {
+				const res = await fetch(url, { cache: 'no-store' });
+				if (!res.ok) throw new Error(`HTTP ${res.status}`);
+				return await res.text();
+			}
+
+			function buildTreeFromPaths(paths) {
+				const root = { name: '(root)', path: '', dirs: [], files: [] };
+				const dirMap = new Map();
+				dirMap.set('', root);
+
+				function getOrCreateDir(dirPath) {
+					if (dirMap.has(dirPath)) return dirMap.get(dirPath);
+					const parts = dirPath.split('/').filter(Boolean);
+					const name = parts[parts.length - 1] || '(root)';
+					const node = { name, path: dirPath, dirs: [], files: [] };
+					dirMap.set(dirPath, node);
+
+					const parentPath = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+					const parent = getOrCreateDir(parentPath);
+					// Avoid duplicates
+					if (!parent.dirs.some((d) => d.path === dirPath)) parent.dirs.push(node);
+					return node;
+				}
+
+				for (const p of paths) {
+					// Hide dot-folders / dot-files from repo listing too (e.g. .vscode)
+					const segments = p.split('/').filter(Boolean);
+					if (segments.some((s) => s.startsWith('.'))) continue;
+					const parts = p.split('/').filter(Boolean);
+					const fileName = parts.pop();
+					const dirPath = parts.join('/');
+					const dir = getOrCreateDir(dirPath);
+					dir.files.push({ name: fileName, path: p });
+				}
+
+				return root;
+			}
+
+			function renderApiTree(tree) {
+				treeEl.textContent = '';
+				clearViewer();
+
+				const ul = document.createElement('ul');
+				treeEl.appendChild(ul);
+
+				let totalFiles = 0;
+				let shownFiles = 0;
+
+				function walk(node, parentUl) {
+					const dirNames = (node.dirs || [])
+						.filter((d) => shouldShowDir(d.name))
+						.slice()
+						.sort((a, b) => a.name.localeCompare(b.name));
+					for (const dirNode of dirNames) {
+						const { li, btn } = buildTreeNode(`📁 ${dirNode.name}`, false);
+						parentUl.appendChild(li);
+
+						const childUl = document.createElement('ul');
+						li.appendChild(childUl);
+
+						btn.addEventListener('click', () => {
+							const hidden = childUl.hasAttribute('hidden');
+							if (hidden) childUl.removeAttribute('hidden');
+							else childUl.setAttribute('hidden', '');
+						});
+
+						walk(dirNode, childUl);
+					}
+
+					const fileNodes = (node.files || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+					for (const fileNode of fileNodes) {
+						totalFiles++;
+						if (!shouldShowFile(fileNode.name)) continue;
+						shownFiles++;
+
+						const { li, btn } = buildTreeNode(`📄 ${fileNode.name}`, true);
+						parentUl.appendChild(li);
+						btn.addEventListener('click', async () => {
+							setCurrentButton(btn);
+							selectedNameEl.textContent = fileNode.name;
+							selectedPathEl.textContent = fileNode.path;
+							viewerEl.textContent = 'Loading…';
+							outputEl.textContent = 'Output will appear here.';
+							try {
+								const text = await fetchText(`/api/file?path=${encodeURIComponent(fileNode.path)}`);
+								viewerEl.textContent = text;
+								currentSelectionPath = fileNode.path;
+								currentSourceCode = text;
+								runBtn.disabled = false;
+							} catch (e) {
+								viewerEl.textContent = `Failed to read file: ${e?.message || e}`;
+								runBtn.disabled = true;
+							}
+						});
+					}
+				}
+
+				walk(tree, ul);
+				setStatus(`Loaded current folder. Showing ${shownFiles} of ${totalFiles} files.`);
+			}
+
+			async function tryAutoLoadFromServer() {
+				if (!isHttp()) return false;
+				try {
+					const tree = await fetchJson('/api/tree');
+					renderApiTree(tree);
+					refreshBtn.disabled = false;
+					repoContext = null;
+					return true;
+				} catch {
+					return false;
+				}
+			}
+
+			async function detectRepoContext() {
+				// Supports:
+				// - GitHub Pages: infer owner/repo from URL
+				// - Optional query: ?repo=owner/repo&branch=main
+				const repoParam = getQueryParam('repo');
+				const branchParam = getQueryParam('branch');
+				if (repoParam && repoParam.includes('/')) {
+					const [owner, repo] = repoParam.split('/');
+					return { owner, repo, branch: branchParam || null };
+				}
+
+				const inferred = inferGitHubPagesRepo();
+				if (!inferred) return null;
+				return { owner: inferred.owner, repo: inferred.repo, branch: branchParam || null };
+			}
+
+			async function getDefaultBranch(owner, repo) {
+				const info = await fetchJson(`https://api.github.com/repos/${owner}/${repo}`);
+				return info.default_branch || 'main';
+			}
+
+			async function loadRepoTree(owner, repo, branch) {
+				// Git Trees API supports branch names in place of SHA
+				const data = await fetchJson(
+					`https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`
+				);
+				const entries = Array.isArray(data.tree) ? data.tree : [];
+				const paths = entries
+					.filter((e) => e.type === 'blob' && typeof e.path === 'string')
+					.map((e) => e.path);
+				return paths;
+			}
+
+			function rawUrlFor(owner, repo, branch, path) {
+				return `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(branch)}/${path}`;
+			}
+
+			async function tryAutoLoadFromGitHubRepo() {
+				if (!isHttp()) return false;
+				const ctx = await detectRepoContext();
+				if (!ctx) return false;
+
+				try {
+					setStatus('Loading repo files from GitHub…');
+					const branch = ctx.branch || (await getDefaultBranch(ctx.owner, ctx.repo));
+					const paths = await loadRepoTree(ctx.owner, ctx.repo, branch);
+					const tree = buildTreeFromPaths(paths);
+					repoContext = { owner: ctx.owner, repo: ctx.repo, branch };
+					rootHandle = null;
+					fallbackFiles = null;
+					renderRepoTree(tree);
+					refreshBtn.disabled = false;
+					return true;
+				} catch (e) {
+					setStatus(`Could not load repo files: ${e?.message || e}`);
+					repoContext = null;
+					return false;
+				}
+			}
+
+			function renderRepoTree(tree) {
+				// Similar UI to server tree, but clicking reads from raw.githubusercontent.com
+				treeEl.textContent = '';
+				clearViewer();
+
+				const ul = document.createElement('ul');
+				treeEl.appendChild(ul);
+
+				let totalFiles = 0;
+				let shownFiles = 0;
+
+				function walk(node, parentUl) {
+					const dirs = (node.dirs || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+					for (const dirNode of dirs) {
+						const { li, btn } = buildTreeNode(`📁 ${dirNode.name}`, false);
+						parentUl.appendChild(li);
+						const childUl = document.createElement('ul');
+						li.appendChild(childUl);
+						btn.addEventListener('click', () => {
+							const hidden = childUl.hasAttribute('hidden');
+							if (hidden) childUl.removeAttribute('hidden');
+							else childUl.setAttribute('hidden', '');
+						});
+						walk(dirNode, childUl);
+					}
+
+					const files = (node.files || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+					for (const f of files) {
+						totalFiles++;
+						if (!shouldShowFile(f.name)) continue;
+						shownFiles++;
+
+						const { li, btn } = buildTreeNode(`📄 ${f.name}`, true);
+						parentUl.appendChild(li);
+						btn.addEventListener('click', async () => {
+							setCurrentButton(btn);
+							selectedNameEl.textContent = f.name;
+							selectedPathEl.textContent = f.path;
+							viewerEl.textContent = 'Loading…';
+							outputEl.textContent = 'Output will appear here.';
+							runBtn.disabled = true;
+
+							try {
+								if (!repoContext) throw new Error('Repo context missing');
+								const url = rawUrlFor(repoContext.owner, repoContext.repo, repoContext.branch, f.path);
+								const text = await fetchText(url);
+								viewerEl.textContent = text;
+								currentSelectionPath = f.path;
+								currentSourceCode = text;
+								runBtn.disabled = false;
+							} catch (e) {
+								viewerEl.textContent = `Failed to load file: ${e?.message || e}`;
+							}
+						});
+					}
+				}
+
+				walk(tree, ul);
+				setStatus(
+					repoContext
+						? `Loaded repo ${repoContext.owner}/${repoContext.repo}@${repoContext.branch}. Showing ${shownFiles} of ${totalFiles} files.`
+						: `Loaded repo. Showing ${shownFiles} of ${totalFiles} files.`
+				);
+			}
+
+			async function getPistonRuntime() {
+				if (pistonRuntime) return pistonRuntime;
+				// Uses the public Piston API. This requires internet access and a public repo/site.
+				const runtimes = await fetchJson('https://emkc.org/api/v2/piston/runtimes');
+				const cRuntime = runtimes.find((r) => r.language === 'c') || runtimes.find((r) => r.aliases?.includes('c'));
+				if (!cRuntime) throw new Error('C runtime not available');
+				pistonRuntime = { language: cRuntime.language, version: cRuntime.version };
+				return pistonRuntime;
+			}
+
+			async function runCurrentProgram() {
+				if (!currentSourceCode) return;
+				runBtn.disabled = true;
+				outputEl.textContent = 'Running…';
+				try {
+					const rt = await getPistonRuntime();
+					const payload = {
+						language: rt.language,
+						version: rt.version,
+						files: [{ name: 'main.c', content: currentSourceCode }],
+					};
+					const res = await fetch('https://emkc.org/api/v2/piston/execute', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify(payload),
+					});
+					if (!res.ok) throw new Error(`HTTP ${res.status}`);
+					const data = await res.json();
+					const run = data.run || {};
+					const compile = data.compile || {};
+					const stdout = (compile.stdout || '') + (compile.stderr || '') + (run.stdout || '') + (run.stderr || '');
+					outputEl.textContent = stdout.trim() ? stdout : '(no output)';
+				} catch (e) {
+					outputEl.textContent = `Run failed: ${e?.message || e}`;
+				} finally {
+					runBtn.disabled = !currentSourceCode;
+				}
+			}
+
 			function buildFallbackIndex(fileList) {
 				// fileList: FileList from <input webkitdirectory>
 				// Each File has webkitRelativePath like "C Programming/sub/abc.c".
@@ -335,7 +693,9 @@
 				let shownFiles = 0;
 
 				function walk(node, parentUl) {
-					const dirNames = Array.from(node.dirs.keys()).sort((a, b) => a.localeCompare(b));
+					const dirNames = Array.from(node.dirs.keys())
+						.filter((d) => shouldShowDir(d))
+						.sort((a, b) => a.localeCompare(b));
 					for (const dirName of dirNames) {
 						const dirNode = node.dirs.get(dirName);
 						const { li, btn } = buildTreeNode(`📁 ${dirName}`, false);
@@ -398,7 +758,12 @@
 
 			// Wire up UI
 			pickFolderBtn.addEventListener('click', pickFolder);
+			runBtn.addEventListener('click', runCurrentProgram);
 			refreshBtn.addEventListener('click', async () => {
+				if (repoContext) {
+					await tryAutoLoadFromGitHubRepo();
+					return;
+				}
 				if (rootHandle) {
 					await renderFromHandle(rootHandle);
 					return;
@@ -409,6 +774,10 @@
 				}
 			});
 			onlyC.addEventListener('change', async () => {
+				if (repoContext) {
+					await tryAutoLoadFromGitHubRepo();
+					return;
+				}
 				if (rootHandle) {
 					await renderFromHandle(rootHandle);
 					return;
@@ -437,6 +806,16 @@
 				// Still offer fallback in case permissions are blocked.
 				fallbackBtn.hidden = false;
 			}
+
+			// Auto-load current folder when served via local server (server.py)
+			(async () => {
+				const loaded = (await tryAutoLoadFromGitHubRepo()) || (await tryAutoLoadFromServer());
+				if (loaded) return;
+
+				if (isHttp()) {
+					setStatus('Use GitHub Pages (repo mode), open with server.py, or use folder picker.');
+				}
+			})();
 		</script>
 	</body>
 </html>

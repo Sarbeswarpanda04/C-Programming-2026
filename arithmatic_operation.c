@@ -9,3 +9,6 @@ int main(){
     printf("\nthe division of %d & %d is %d", x, y, x / y);
     return 0;
 }
+
+
+//Author: Sarbeswar Panda
