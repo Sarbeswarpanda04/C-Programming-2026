@@ -1,7 +1,8 @@
 #include<stdio.h>
 int main() {
-    printf("nn\n\nnn\n");
-    printf("nn/n/nnn/n");
+    int n;
+    n = 10;
+    printf("The value of n is: %d", n);
     return 0;
 }
 
