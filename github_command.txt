@@ -1,0 +1,83 @@
+# Configure (first time)
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+git config --global init.defaultBranch main
+
+# Create a repo locally
+git init
+git status
+
+# Add + commit
+git add .
+git commit -m "Initial commit"
+
+# Connect to GitHub (HTTPS)
+git remote add origin https://github.com/<user>/<repo>.git
+git branch -M main
+git push -u origin main
+
+# Or connect to GitHub (SSH)
+git remote add origin git@github.com:<user>/<repo>.git
+git branch -M main
+git push -u origin main
+
+# Clone an existing repo
+git clone https://github.com/<user>/<repo>.git
+# (or SSH) git clone git@github.com:<user>/<repo>.git
+
+# Pull latest changes
+git pull
+
+# Make a new branch + switch to it
+git checkout -b feature/my-change
+# (newer) git switch -c feature/my-change
+
+# Switch branches
+git checkout main
+# (newer) git switch main
+
+# Push a branch
+git push -u origin feature/my-change
+
+# See branches
+git branch
+git branch -a
+
+# Merge a branch into main
+git switch main
+git pull
+git merge feature/my-change
+
+# Fix “forgot to add a file”
+git add <file>
+git commit --amend --no-edit
+
+# Undo (common cases)
+git restore <file>                 # discard local changes (uncommitted)
+git restore --staged <file>         # unstage
+git reset --soft HEAD~1             # undo last commit, keep changes staged
+git reset --hard HEAD~1             # delete last commit + changes (careful)
+
+# View history
+git log --oneline --graph --decorate --all
+
+# Check remotes
+git remote -v
+
+# Delete a branch
+git branch -d feature/my-change          # local
+git push origin --delete feature/my-change # remote
+
+# Stash (temporary save)
+git stash
+git stash pop
+
+# Add a .gitignore quickly (example for C)
+# Create .gitignore and add:
+# *.exe
+# *.o
+# *.obj
+# *.out
+# *.dll
+# *.pdb
+# .vscode/
